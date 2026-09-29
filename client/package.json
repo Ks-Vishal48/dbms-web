@@ -1,0 +1,1 @@
+{"name":"dbms-lab-portal-client","private":true,"version":"1.0.0","type":"module","scripts":{"dev":"vite","build":"vite build"},"dependencies":{"@vitejs/plugin-react":"latest","firebase":"latest","lucide-react":"latest","react":"latest","react-dom":"latest"},"devDependencies":{"vite":"latest"}}
