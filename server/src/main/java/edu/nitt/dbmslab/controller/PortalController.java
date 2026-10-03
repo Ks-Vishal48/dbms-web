@@ -29,6 +29,7 @@ public class PortalController {
     try { List<Map<String,Object>> rows=jdbc.queryForList(sql); return ResponseEntity.ok(Map.of("columns", rows.isEmpty()?List.of():new ArrayList<>(rows.get(0).keySet()), "rows", rows, "count", rows.size())); }
     catch (Exception ex) { return ResponseEntity.badRequest().body(Map.of("message", ex.getMessage())); }
   }
+  @GetMapping("/submissions") public List<Submission> allSubmissions(){ return submissions.findAll(); }
   @GetMapping("/submissions/{studentId}") public List<Submission> history(@PathVariable Long studentId){ return submissions.findByStudentIdOrderBySubmittedAtDesc(studentId); }
   @GetMapping("/users") public List<User> users(){ return users.findAll(); }
   private String normalise(String sql) { return sql.toLowerCase().replaceAll("\\s+", " ").replaceAll(";", "").trim(); }
