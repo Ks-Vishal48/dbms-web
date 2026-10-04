@@ -3,9 +3,17 @@ import { createRoot } from 'react-dom/client';
 import {
   BookOpen, LayoutDashboard, Database, Code2, Users, Plus, LogOut,
   ChevronRight, Clock, CheckCircle2, AlertCircle, Play, GraduationCap,
-  ShieldCheck, X, FileQuestion, Sparkles
+  ShieldCheck, X, Sparkles, Mail, Lock, User as UserIcon, LogIn, UserPlus, Info
 } from 'lucide-react';
-import { enabled, signInWithGoogle } from './firebase';
+import {
+  enabled,
+  signInWithGoogle,
+  signUpWithEmail,
+  loginWithEmail,
+  logOut as firebaseLogOut,
+  resetPassword,
+  onAuthChange
+} from './firebase';
 import './styles.css';
 
 const API = 'http://localhost:8080/api';
@@ -35,24 +43,70 @@ function App() {
       .finally(() => setLoading(false));
   };
 
+  // Sync Firebase User with MySQL Backend
+  const syncWithBackend = async (firebaseUser, defaultRole = 'STUDENT') => {
+    try {
+      const res = await fetch(API + '/auth/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: firebaseUser.displayName || firebaseUser.email?.split('@')[0] || 'User',
+          email: firebaseUser.email,
+          role: defaultRole
+        })
+      });
+      if (res.ok) {
+        const synced = await res.json();
+        setUser(synced);
+      } else {
+        setUser({
+          id: 1,
+          name: firebaseUser.displayName || firebaseUser.email,
+          email: firebaseUser.email,
+          role: defaultRole
+        });
+      }
+    } catch {
+      setUser({
+        id: 1,
+        name: firebaseUser.displayName || firebaseUser.email,
+        email: firebaseUser.email,
+        role: defaultRole
+      });
+    }
+  };
+
   useEffect(() => {
     fetchDashboard();
+
+    // Listen to Firebase Auth state changes
+    const unsubscribe = onAuthChange(async (firebaseUser) => {
+      if (firebaseUser) {
+        await syncWithBackend(firebaseUser);
+      }
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
+
+  const handleLogout = async () => {
+    try {
+      await firebaseLogOut();
+    } catch (e) {
+      console.error(e);
+    }
+    setUser(null);
+  };
 
   const enterDemoStudent = () => setUser(demoStudent);
   const enterDemoAdmin = () => setUser(demoAdmin);
 
   const toggleRole = () => {
-    if (user.role === 'STUDENT') setUser(demoAdmin);
-    else setUser(demoStudent);
-  };
-
-  const google = async () => {
-    try {
-      let r = await signInWithGoogle();
-      setUser({ name: r.user.displayName, email: r.user.email, role: 'STUDENT', id: 1 });
-    } catch (e) {
-      alert(e.message);
+    if (user.role === 'STUDENT') {
+      setUser({ ...user, role: 'ADMIN' });
+    } else {
+      setUser({ ...user, role: 'STUDENT' });
     }
   };
 
@@ -84,7 +138,7 @@ function App() {
       let res = await fetch(API + '/submissions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ questionId: q.id, studentId: user.id, queryText: sql })
+        body: JSON.stringify({ questionId: q.id, studentId: user.id || 1, queryText: sql })
       });
       let subData = await res.json();
       setResult({ ...subData, runInfo });
@@ -138,8 +192,8 @@ function App() {
     }
   };
 
-  if (!user) return <Login onStudent={enterDemoStudent} onAdmin={enterDemoAdmin} google={google} />;
-  if (loading) return <div className="loading">Loading portal…</div>;
+  if (loading) return <div className="loading">Loading DBMS Lab Portal…</div>;
+  if (!user) return <AuthScreen onLoginSuccess={syncWithBackend} onDemoStudent={enterDemoStudent} onDemoAdmin={enterDemoAdmin} />;
 
   return (
     <div className="shell">
@@ -170,12 +224,12 @@ function App() {
         </nav>
 
         <div className="profile">
-          <div className="avatar">{user.name[0]}</div>
+          <div className="avatar">{user.name ? user.name[0].toUpperCase() : 'U'}</div>
           <div>
             <b>{user.name}</b>
             <small>{user.role === 'ADMIN' ? 'Faculty / Admin' : 'Student'}</small>
           </div>
-          <button onClick={() => setUser(null)} title="Log out"><LogOut size={17} /></button>
+          <button onClick={handleLogout} title="Log out"><LogOut size={17} /></button>
         </div>
       </aside>
 
@@ -184,7 +238,7 @@ function App() {
           <div>
             <p className="eyebrow">DATABASE MANAGEMENT SYSTEMS</p>
             <h1>
-              {page === 'dashboard' ? `Welcome, ${user.name.split(' ')[0]}` :
+              {page === 'dashboard' ? `Welcome, ${user.name?.split(' ')[0] || 'User'}` :
                page === 'labs' ? 'Lab Assignments' :
                page === 'schema' ? 'Academic Database Schema' :
                page === 'history' ? (user.role === 'ADMIN' ? 'Review Student Submissions' : 'Your Submissions') :
@@ -248,29 +302,240 @@ function App() {
   );
 }
 
-function Login({ onStudent, onAdmin, google }) {
+function AuthScreen({ onLoginSuccess, onDemoStudent, onDemoAdmin }) {
+  const [tab, setTab] = useState('signin'); // 'signin' | 'signup' | 'forgot'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [name, setName] = useState('');
+  const [role, setRole] = useState('STUDENT');
+  const [error, setError] = useState('');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const handleSignIn = async (e) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    setBusy(true);
+    try {
+      const fbUser = await loginWithEmail(email, password);
+      await onLoginSuccess(fbUser);
+    } catch (err) {
+      setError(err.message || 'Failed to sign in');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSignUp = async (e) => {
+    e.preventDefault();
+    setError('');
+    setMsg('');
+    if (password.length < 6) {
+      return setError('Password must be at least 6 characters.');
+    }
+    setBusy(true);
+    try {
+      const fbUser = await signUpWithEmail(name, email, password);
+      await onLoginSuccess(fbUser, role);
+    } catch (err) {
+      setError(err.message || 'Failed to sign up');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleGoogle = async () => {
+    setError('');
+    setBusy(true);
+    try {
+      const res = await signInWithGoogle();
+      await onLoginSuccess(res.user, 'STUDENT');
+    } catch (err) {
+      setError(err.message || 'Google sign in failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleReset = async (e) => {
+    e.preventDefault();
+    if (!email) return setError('Please enter your email address first.');
+    setError('');
+    setBusy(true);
+    try {
+      await resetPassword(email);
+      setMsg('Password reset link sent to your email!');
+    } catch (err) {
+      setError(err.message || 'Failed to send reset link');
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="login">
       <section>
         <div className="login-brand"><Database /> Query<span>Lab</span></div>
         <p className="eyebrow">NATIONAL INSTITUTE OF TECHNOLOGY, TIRUCHIRAPPALLI</p>
         <h1>Learn SQL by<br /><em>doing the work.</em></h1>
-        <p className="lead">A focused interactive workspace for DBMS labs, schema exploration, query execution, and evaluated SQL practice.</p>
+        <p className="lead">A complete interactive DBMS workspace for live query execution, practice schemas, and automated scoring.</p>
 
-        <div className="login-actions">
-          <button className="primary" onClick={onStudent}>
-            Continue as Student <ChevronRight size={18} />
-          </button>
-          <button className="outline" onClick={onAdmin}>
-            <ShieldCheck size={18} /> Continue as Faculty / Admin
-          </button>
-          {enabled && (
-            <button className="outline" onClick={google}>
-              Sign in with Google
+        <div className="auth-card">
+          <div className="auth-tabs">
+            <button className={tab === 'signin' ? 'active' : ''} onClick={() => { setTab('signin'); setError(''); setMsg(''); }}>
+              <LogIn size={15} style={{ verticalAlign: 'middle', marginRight: '4px' }} /> Sign In
             </button>
+            <button className={tab === 'signup' ? 'active' : ''} onClick={() => { setTab('signup'); setError(''); setMsg(''); }}>
+              <UserPlus size={15} style={{ verticalAlign: 'middle', marginRight: '4px' }} /> Create Account
+            </button>
+          </div>
+
+          {error && <div className="auth-msg error"><AlertCircle size={16} /> {error}</div>}
+          {msg && <div className="auth-msg success"><CheckCircle2 size={16} /> {msg}</div>}
+
+          {tab === 'signin' && (
+            <form className="auth-form" onSubmit={handleSignIn}>
+              <div className="form-group">
+                <label>Email Address</label>
+                <input
+                  type="email"
+                  placeholder="student@nitt.edu"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Password</label>
+                <input
+                  type="password"
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  required
+                />
+              </div>
+
+              <button type="submit" className="primary-btn" disabled={busy}>
+                {busy ? 'Signing in...' : 'Sign In with Firebase'}
+              </button>
+
+              <button
+                type="button"
+                style={{ background: 'none', color: 'var(--muted)', fontSize: '12px', textAlign: 'right', marginTop: '-4px' }}
+                onClick={() => setTab('forgot')}
+              >
+                Forgot password?
+              </button>
+
+              <div className="auth-divider"><span>OR</span></div>
+
+              <button type="button" className="google-btn" onClick={handleGoogle} disabled={busy}>
+                <svg className="google-icon" viewBox="0 0 24 24">
+                  <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                  <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                  <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                  <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                </svg>
+                Continue with Google
+              </button>
+            </form>
           )}
+
+          {tab === 'signup' && (
+            <form className="auth-form" onSubmit={handleSignUp}>
+              <div className="form-group">
+                <label>Full Name</label>
+                <input
+                  placeholder="e.g. Aarav Sharma"
+                  value={name}
+                  onChange={e => setName(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-group">
+                <label>Email Address</label>
+                <input
+                  type="email"
+                  placeholder="name@nitt.edu"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Password</label>
+                  <input
+                    type="password"
+                    placeholder="Min 6 chars"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    required
+                  />
+                </div>
+                <div className="form-group">
+                  <label>Role</label>
+                  <select value={role} onChange={e => setRole(e.target.value)}>
+                    <option value="STUDENT">Student</option>
+                    <option value="FACULTY">Faculty / Admin</option>
+                  </select>
+                </div>
+              </div>
+
+              <button type="submit" className="primary-btn" disabled={busy}>
+                {busy ? 'Creating Account...' : 'Sign Up with Firebase'}
+              </button>
+
+              <div className="auth-divider"><span>OR</span></div>
+
+              <button type="button" className="google-btn" onClick={handleGoogle} disabled={busy}>
+                Continue with Google
+              </button>
+            </form>
+          )}
+
+          {tab === 'forgot' && (
+            <form className="auth-form" onSubmit={handleReset}>
+              <p style={{ fontSize: '13px', color: 'var(--muted)', margin: '0 0 10px' }}>
+                Enter your email address to receive a password reset link from Firebase.
+              </p>
+              <div className="form-group">
+                <label>Email Address</label>
+                <input
+                  type="email"
+                  placeholder="name@nitt.edu"
+                  value={email}
+                  onChange={e => setEmail(e.target.value)}
+                  required
+                />
+              </div>
+              <button type="submit" className="primary-btn" disabled={busy}>
+                {busy ? 'Sending...' : 'Send Password Reset Email'}
+              </button>
+              <button
+                type="button"
+                className="outline"
+                onClick={() => { setTab('signin'); setError(''); }}
+              >
+                Back to Sign In
+              </button>
+            </form>
+          )}
+
+          <div className="demo-box">
+            <p>Don't have Firebase credentials yet? Use 1-click Demo:</p>
+            <div className="demo-buttons">
+              <button type="button" className="demo-btn" onClick={onDemoStudent}>
+                Demo Student
+              </button>
+              <button type="button" className="demo-btn" onClick={onDemoAdmin}>
+                Demo Faculty
+              </button>
+            </div>
+          </div>
         </div>
-        <small>Powered by Spring Boot + MySQL evaluation engine</small>
       </section>
 
       <aside className="login-card">
@@ -283,7 +548,7 @@ function Login({ onStudent, onAdmin, google }) {
         </code>
         <div>
           <CheckCircle2 size={18} />
-          <span>Query accepted · 10/10 Score</span>
+          <span>Firebase Auth · MySQL Relational Sandbox</span>
         </div>
       </aside>
     </div>

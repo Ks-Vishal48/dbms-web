@@ -29,6 +29,19 @@ public class PortalController {
     try { List<Map<String,Object>> rows=jdbc.queryForList(sql); return ResponseEntity.ok(Map.of("columns", rows.isEmpty()?List.of():new ArrayList<>(rows.get(0).keySet()), "rows", rows, "count", rows.size())); }
     catch (Exception ex) { return ResponseEntity.badRequest().body(Map.of("message", ex.getMessage())); }
   }
+  @PostMapping("/auth/sync")
+  public User syncUser(@RequestBody Map<String, String> body) {
+    String email = body.getOrDefault("email", "").trim().toLowerCase();
+    String name = body.getOrDefault("name", "User").trim();
+    String roleStr = body.getOrDefault("role", "STUDENT").toUpperCase();
+    User.Role role = User.Role.STUDENT;
+    try { role = User.Role.valueOf(roleStr); } catch (Exception ignored) {}
+    if (email.contains("admin")) role = User.Role.ADMIN;
+    final User.Role finalRole = role;
+    return users.findByEmail(email).orElseGet(() -> 
+      users.save(User.builder().name(name).email(email).role(finalRole).build())
+    );
+  }
   @GetMapping("/submissions") public List<Submission> allSubmissions(){ return submissions.findAll(); }
   @GetMapping("/submissions/{studentId}") public List<Submission> history(@PathVariable Long studentId){ return submissions.findByStudentIdOrderBySubmittedAtDesc(studentId); }
   @GetMapping("/users") public List<User> users(){ return users.findAll(); }
